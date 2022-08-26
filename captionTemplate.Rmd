@@ -1,0 +1,40 @@
+---
+title: "Captions for the smallset timeline"
+author: 
+date: 2022-08-13
+output: html_document
+---
+
+Timeline title: 
+
+Timeline subtitle: 
+
+Timeline footnote: 
+
+### Starting smallset
+
+Caption: 
+
+### ``
+
+Caption: 
+
+### ``
+
+Caption: 
+
+### ``
+
+Caption: 
+
+### ``
+
+Caption: 
+
+### ``
+
+Caption: 
+
+### Ending smallset
+
+Caption: 

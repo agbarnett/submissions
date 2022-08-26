@@ -1,0 +1,556 @@
+---
+title: "Analysis of JPC submission data over time. Examining submissions on weekends, holidays and late nights, and the effect of the pandemic."
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  word_document:
+    reference_docx: "bmj-open-style.docx"
+---
+
+```{r setup, include=FALSE}
+# basic set up
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+options(width=1000, scipen = 999) # Wide pages and no scientific numbers
+library(season) # for yrfrac and phasecalc
+library(stringr)
+library(flextable)
+#source('3_tidy_table.R') # for my table tidying
+library(dplyr)
+library(tidyr)
+source('99_functions.R')
+
+# graphics
+library(ggplot2)
+library(viridis) # for colour schemes
+library(gridExtra)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+# set up colours
+cbPalette = c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+library(RColorBrewer)
+top.ten.colours = brewer.pal(n = 10, name = "Paired") # for top ten, from diverging palette
+
+# conflicts
+library(conflicted)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+
+## load the author and reviewer data
+load('data/jpcAnalysisReady.RData') # authors from 1_prepare_data.R
+jpc = dplyr::select(jpc, -lon, -lat, -timezoneId, -city, -address) # drop variables not used here
+# dates for text below
+min.date = min(as.Date(jpc$local.date))
+max.date = max(as.Date(jpc$local.date))
+# top ten countries
+tab = table(jpc$country)
+top.ten = names(tab[order(-tab)])[1:10]
+# dates from windows for seasonal analysis (used below)
+for.merge = data.frame(window = seq(1,400,1)) %>%
+  mutate(date = as.Date('2015-01-02')+(window*7)) # start on Jan 2nd
+```
+
+# Modelling approach
+
+All statistical models were fitted using a Bayesian approach and therefore show 95% credible intervals instead of confidence intervals. Credible intervals have the more intuitive interpretation of having a 95% probability of containing the true estimate. We do not use p-values, but instead give Bayesian posterior probabilities.
+
+# Flow diagrams of included data
+
+The diagram below shows what journal submissions were included in the final analyses.
+
+```{r flow.diagram, fig.width=4, fig.height=5}
+source('2_consort_flow.R')
+plot.it(sub, header='', type='rmarkdown')
+```
+
+##### page break
+
+# Summary data on submissions
+
+## Version number
+
+```{r}
+tab = group_by(jpc, version) %>%
+  tally() %>%
+  mutate(percent = round(100*prop.table(n)))
+ftab = flextable(tab) %>%
+  autofit() %>%
+  theme_box()
+ftab
+```
+
+## Decision
+
+```{r}
+tab = group_by(jpc, decision) %>%
+  tally() %>%
+  arrange(-n) %>%
+  mutate(percent = round(100*prop.table(n)))
+ftab = flextable(tab) %>%
+  autofit() %>%
+  theme_box()
+ftab
+```
+
+The missing decisions are likely those papers where a decision has yet to be made. 
+
+## Journal submissions over time
+
+```{r plot.over.time, fig.width=9, fig.height=6}
+# prepare data for plot
+over.time = mutate(jpc, 
+              year = as.numeric(format(local.date, '%Y')), # make month and year
+              month = as.numeric(format(local.date, '%m')),
+              yrmon = year + ((month-1)/12)) %>%
+  group_by(yrmon, year, month) %>%
+  summarise(count = n())
+# adjust monthly count to standard 30 day month
+days_per_month = flagleap(over.time, report=FALSE)
+over.time = left_join(over.time, days_per_month, by=c('year','month')) %>%
+  mutate(adj_count = 30*(count/ndaysmonth)) 
+#
+tplot = ggplot(data=over.time, aes(x=yrmon, y=adj_count))+
+  geom_vline(xintercept=pandemic_yrmon, lty=2, col='indianred2')+
+  geom_point()+
+  geom_line()+
+  xlab('Time')+
+  ylab('Monthly number of submissions')+
+  g.theme +
+  theme(text= element_text(size=15))
+tplot
+jpeg('figures/numbers_over_time.jpg', width=5, height=4, units='in', res=400, quality=100)
+print(tplot)
+invisible(dev.off())
+```
+
+The plot shows the number of submissions and reviews in each month. The y-axis does not start at zero. The monthly counts have been standardised to a 30-day month. The vertical red line is the date that the WHO declared a worldwide pandemic. There is clear rise in submissions after this date.
+
+## Submitted dates
+
+```{r}
+tab = summarise(jpc,
+          min = min(local.date),
+          median = median(local.date),
+          max = max(local.date))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+The table shows the date range and median date.
+
+## Model of submission numbers over time
+
+Here we estimate the increase in submissions after the pandemic. We adjust for the long-term increasing trend.
+
+```{r trend, include=FALSE}
+file = c('results', 'trend') # location and filename
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  source('99_nimble_trend.R')
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+```{r}
+nice_table = process_table(results_trend$table, dp=0, rows=c('intercept','trend','pand'))
+nice_table
+#
+av_increase = filter(results_trend$table, parameter=='pand') %>% pull(mean) %>% round()
+```
+
+There was a large increase in submissions after the pandemic declaration, with an estimated mean increase of `r av_increase` papers per month.
+
+##### page break
+
+# Weekends
+
+In this section we tabulate, plot and model the data on weekend submissions.
+
+The table shows the overall frequency of submissions on weekdays and weekends in the top ten submitting countries.
+
+```{r table_weekends}
+tab = filter(jpc, country %in% top.ten) %>%
+  mutate(country = factor(as.character(country))) %>% # remove empty categories
+  group_by(country, weekend) %>%
+  tally() %>%
+  group_by(country) %>%
+  mutate(percent = round(prop.table(n)*100),
+         cell = paste(n, ' (', percent, ')', sep='')) %>%
+  dplyr::select(country, weekend, cell) %>%
+  pivot_wider(names_from=  'weekend', values_from='cell')
+ftab = flextable(tab) %>%
+  autofit() %>%
+  theme_box()
+ftab
+# all countries (not shown)
+tab_full = mutate(jpc, country = factor(as.character(country))) %>% # remove empty categories
+  group_by(country, weekend) %>%
+  tally() %>%
+  group_by(country) %>%
+  mutate(percent = round(prop.table(n)*100))
+```
+
+
+
+## Plots of weekdays by year
+
+The aim is to look for a trend over time in the percent of weekend submissions and reviews.
+The plots show the annual numbers of submissions and reviews by day of the week from 2015 to mid-2022.
+
+```{r plot_submissions, fig.width=11, fig.height=7}
+# combine into weekends vs weekdays
+wdays = c('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday')
+wdays2 = c('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')
+to.plot = mutate(jpc, 
+        year = as.numeric(format(local.date, '%Y')), # make year and weekday
+         weekday = as.numeric(format(local.date, '%w')),
+         weekday = factor(weekday, levels=0:6, labels=wdays),
+         weekday = ordered(weekday, levels=wdays2)) %>% # order with Monday first
+  group_by(year, weekday) %>% # stratify by year and journal
+  summarise(count = n()) %>%
+  group_by(year) %>%
+  mutate(sum = sum(count), # counts by year and journal
+         percent = 100*count/sum) %>%
+  ungroup()
+# plot
+wplot = ggplot(data=to.plot, aes(x=year, y=percent, col=weekday))+
+  geom_line(lwd=1.1)+
+  scale_color_manual(NULL, values=cbPalette[1:7])+
+  ylab('Submission percentages')+
+  xlab('Year')+
+  g.theme + 
+  theme(legend.position = 'right', legend.direction = 'vertical', text=element_text(size=16))
+wplot
+```
+
+The plot shows an increase over time in weekend submissions.
+
+## Plot of weekend percents using week-to-week results
+
+The plot below aims to examine the trend over time in weekend submissions. It shows the Weekly percentage of submitted papers on the weekend. 
+
+```{r week2week_submissions, fig.width=12, fig.height=7}
+# first get axis labels in years by window numbers
+# find window closest to 1st January
+axis.labels = group_by(jpc, window) %>%
+  summarise(med = median(local.date)) %>%
+  mutate(year = format(med, '%Y'),
+         frac = yrfraction(med)) %>%
+  arrange(year, frac) %>%
+  group_by(year) %>%
+  slice(1)
+# plot weekends by week-to-week
+span = 0.5
+for.plot = arrange(jpc, local.date) %>%
+  group_by(window, weekend) %>%
+  summarise(count = n()) %>%
+  tidyr::spread(key=weekend, value=count) %>% # put weekends and weekdays on same row
+  mutate(Weekday = ifelse(is.na(Weekday), 0, Weekday), # replace missing with zero
+         Weekend = ifelse(is.na(Weekend), 0, Weekend),
+         denom = Weekday + Weekend,
+         percent = 100*Weekend/denom)
+# find window for pandemic line
+pandemic_week = mutate(jpc, diff = abs(local.date - pandemic_date)) %>%
+  arrange(diff) %>%
+  slice(1)
+#
+tplot = ggplot(data=for.plot, aes(x=window, y=percent))+
+  geom_vline(xintercept=pandemic_week$window, lty=2, col='indianred2')+
+  geom_line(col='grey33')+
+  geom_smooth(col='darkorange', se = FALSE, method='loess', span=span)+
+  g.theme+
+  scale_x_continuous(breaks=axis.labels$window, labels=axis.labels$year)+
+  ylab('Weekly percent')+
+  xlab('Time')+
+  theme(text = element_text(size=16))
+tplot
+```
+
+The orange line is an estimated trend using a non-linear smooth loess with a span of `r span`. The estimated trends shows an increase in weekend submissions close to the pandemic start. The percent of weekend submissions was also relatively high at the start of the data in 2015.
+
+# Statistical models - weekend submissions
+
+Here we examine a relative increase in weekend submissions over time using a binomial model of the probability of a weekend submission.
+The dependent variable is the number of weekend submissions with the total number of submissions that week as the denominator.
+We used a country-specific intercept for each country to control for differences between countries in the probability of submitting on the weekend.
+We plot the country-specific intercepts to show the differences between countries. We exclude countries with small numbers from the plots.
+
+In terms of the change post-pandemic, we use two models.
+The simpler model assumes the change is the same in every country.
+The more complex model allows a country-specific change.
+We plot the country-specific changes.
+
+We compare the fit of the models using the widely applicable information criterion (WAIC) which trades-off model fit and complexity.
+
+### Best fitting model
+
+First we examine the widely applicable information criterion (WAIC) to find the best model. The column "pWAIC" is the estimated number of parameters.
+
+
+```{r best_weekend, include=FALSE}
+file = c('results', 'weekend') # location and filename
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  source('99_nimble_weekend.R')
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+```{r}
+# 
+waic_table = mutate(results_weekend$model_fit,
+                    model = case_when(
+                      model == 1 ~ 'Fixed slope, fixed pandemic',
+                      model == 2 ~ 'Random slope, fixed pandemic',
+                      model == 3 ~ 'Fixed slope, random pandemic',
+                      model == 4 ~ 'Random slope, random pandemic'
+                    )) %>%
+  arrange(WAIC)
+ftab = flextable(waic_table) %>%
+  autofit() %>%
+  theme_box() %>%
+  colformat_double(j=2, digits=0) %>%
+  colformat_double(j=3, digits=1) 
+ftab
+```
+
+The best model (smallest WAIC) has both a fixed slope and fixed post-pandemic change. Hence we show the results for this model below.
+
+
+### Table of parameter estimates for best model 
+
+```{r best_weekend_results}
+# output table
+ftab = filter(results_weekend$table, model==1) %>%
+  process_table(rows=c('intercept','slope','change'), dp=3) 
+ftab
+```
+
+The table shows an increase in the probability of weekend submissions over time, but no clear effect of the pandemic.
+
+The results in the table above are on the logit scale and so are difficult to interpret. We can instead use the estimated difference in probability of a weekend submission as per the table below.
+
+```{r best_weekend_results_probs}
+# output table
+ftab = filter(results_weekend$table, model==1) %>%
+  process_table(rows=c('p.pred1','p.pred2','p.pred3','difference1','difference2'), dp=3)
+ftab
+```
+
+
+### Plot of random intercepts
+
+The plot below shows the estimated weekend probability in each country. 
+The aim is to look for interesting differences between countries in the probability of submitting papers on the weekend.
+The 95% credible intervals are wider for countries with fewer submissions.
+The countries are ordered by their mean probability, making it easier to spot patterns which countries have similar means.
+
+```{r plot_intercepts_submissions, fig.height=6}
+source('2_plot_intercepts.R')
+iplot
+```
+
+"small" is the estimate for small countries combined, which is those with fewer than 50 submissions. 
+
+
+##### page break
+
+# Times of day
+
+Here we examine the time-of-day pattern of submissions. Using all the countries created plots that were too busy, hence we only show the ten countries with the most submissions.
+
+## Star plots of submissions by hour of day for top ten countries
+
+The star plots show the percentages of submissions made in each country.
+The aim is to see what times of the day researchers are most active and if there are noticeable differences between countries.
+
+```{r star_plots, fig.width=13, fig.height=13}
+## star plots
+# join lines from midnight, see here https://stackoverflow.com/questions/41842249/join-gap-in-polar-line-ggplot-plot
+
+# prepare the data for the plot by calculating percents within country and pandemic timing
+to.plot.star = filter(jpc, country %in% top.ten) %>%
+  mutate(local.hour = floor(local.hour)) %>%
+  group_by(country, pandemic, local.hour) %>%
+  summarise(count = n()) %>%
+  group_by(country) %>%
+  mutate(n = sum(count),
+         percent = 100*count/n) %>%
+  ungroup() 
+# add extra grouping of Europe to help separate lines
+to.plot.star = mutate(to.plot.star, 
+                      Europe = as.numeric(country %in% c('Denmark','France','Germany','Italy','Netherlands','United Kingdom','Portugal','Sweden')),
+                      Europe = factor(Europe, levels=0:1, labels=c('Non-Europe','Europe')))
+# make bridges to join circles
+bridges = filter(to.plot.star, local.hour==0) %>%
+  mutate(local.hour = 23.99) # just before midnight 
+to.plot.star.bridges = bind_rows(to.plot.star, bridges) %>%
+  arrange(country, local.hour)
+# plot
+hour.star = ggplot(data=to.plot.star.bridges, aes(x=local.hour, y=percent, col=country)) +
+  geom_path()+
+  coord_polar(start=0)+
+  scale_x_continuous(limits = c(0,24), minor_breaks = seq(0, 24, 1), breaks=seq(0,24,3))+
+  xlab('Hour of day')+
+  ylab('Frequency')+
+  facet_grid(Europe~pandemic)+
+  ylab('Percent')+
+  scale_color_manual('', values=top.ten.colours)+
+  g.theme +
+  theme(text = element_text(size=20))
+hour.star
+```
+
+
+### Line plots of submission times
+
+This plot shows the same information as the star plot, but using a linear time axis.
+
+```{r non_star, fig.width=13, fig.height=13}
+hour.nonstar = ggplot(data=to.plot.star, aes(x=local.hour, y=percent, col=country)) +
+  geom_line(size=1.1)+
+  scale_x_continuous(limits = c(0,24), minor_breaks = seq(0, 24, 1), breaks=seq(0,24,6))+
+  xlab('Hour of day')+
+  ylab('Frequency')+
+  facet_grid(Europe ~ pandemic)+
+  ylab('Percent')+
+  scale_color_manual('', values=top.ten.colours)+
+  g.theme +
+  theme(text = element_text(size=20))
+hour.nonstar
+```
+
+### Pandemic comparison averaged over all countries
+
+```{r pandemic_country, fig.width=13, fig.height=7}
+# prepare the data for the plot by calculating percents within country and pandemic timing
+to.plot = mutate(jpc, local.hour = floor(local.hour)) %>%
+  group_by(pandemic, local.hour) %>%
+  summarise(count = n()) %>%
+  mutate(n = sum(count),
+         percent = 100*count/n) %>%
+  ungroup() 
+hour.pandemic = ggplot(data=to.plot, aes(x=local.hour, y=percent, col=pandemic)) +
+  geom_line(size=1.1)+
+  scale_x_continuous(limits = c(0,24), minor_breaks = seq(0, 24, 1), breaks=seq(0,24,6))+
+  xlab('Hour of day')+
+  ylab('Frequency')+
+  ylab('Percent')+
+  scale_color_manual('', values=top.ten.colours)+
+  g.theme +
+  theme(
+    legend.position = c(0.85,0.15),
+    text = element_text(size=20))
+hour.pandemic
+```
+
+### Statistical model - time of day
+
+We fitted a model that used a smooth diurnal curve for each country. This allowed countries to vary in terms of when they most often submit papers. We examined the change in the average diurnal curve pre and post-pandemic. We assumed that the effect of the pandemic was consistent across countries.
+
+```{r late_nights, include=FALSE}
+file = c('results', 'late_nights') # location and filename
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  source('99_nimble_late_nights.R')
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+```{r}
+ftab = process_table(results_hours$table, rows=c('cosine','sine','cosine.change','sine.change'), dp=2)
+ftab
+```
+
+The table shows the sine and cosine terms that determine the 24-hour curve for the pre- and post-pandemic periods. There was a change in the cosine and sine curves after the pandemic. The posterior probability of no difference is small, hence there does appear to be some impact of the pandemic. We visualise the change below.  
+
+### Plot of pre- and post-pandemic curves from the statistical model
+
+```{r}
+results_hours$pplot
+jpeg('figures/hour_of_day.jpg', width=5, height=4, units='in', res=500, quality=100)
+print(pplot)
+invisible(dev.off())
+#
+# estimate phase change, pre and post pandemic
+cos_pre = filter(results_hours$table, parameter=='cosine') %>% pull(mean)
+sin_pre = filter(results_hours$table, parameter=='sine') %>% pull(mean)
+phasecalc_pre = 23*phasecalc(cos = cos_pre, sin = sin_pre)/(2*pi)# scaled to hours
+cos_post = filter(results_hours$table, parameter=='cosine.change') %>% pull(mean)
+sin_post = filter(results_hours$table, parameter=='sine.change') %>% pull(mean)
+phasecalc_post = 23*phasecalc(cos = cos_pre + cos_post, sin = sin_pre + sin_post)/(2*pi)
+```
+
+The plot shows the estimated difference between the times before and after the pandemic. This is the average difference across all countries.
+
+There was a shift in the peak time, from `r roundz(phasecalc_pre,1)` hours to `r roundz(phasecalc_post,1)`, so under an hour's difference.
+
+### Country-specific diurnal times from the statistical model
+
+```{r}
+results_hours$phase_plot
+```
+
+"small" is the estimate for small countries combined, which is those with fewer than 50 submissions. 
+
+The plot shows the estimated peak time in each country and the size of peak (amplitude). Portugal has the latest peak time, and the US has the earliest time. New Zealand had the strongest diurnal change and Egypt the smallest. 
+
+##### page break
+
+# Editorial outcome
+
+Here we examine whether the editorial decision made about the paper was dependent on the time of submission. We use a multinomial regression model with the ordinal outcome of reject, revise, accept. We exclude papers without a decision. We fitted an ordinal logistic regression using a cumulative logit model with latent cut-points.
+
+```{r}
+file = c('results', 'editorial') # location and filename
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  source('99_nimble_editorial_outcome.R')
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+```{r}
+ftab = process_table(results_editorial$table, rows=c('cosine','sine','vers1','vers2','vers3','week'), exp=TRUE, dp=2)
+ftab
+```
+
+The table shows the odds ratios (and 95% credible intervals) for being in a higher category, with the order of reject, revise, accept. The reference category for version is the first, hence later versions had a far higher lower odds of being rejected. Submissions on the weekend had a lower odds of being accepted. There was an apparent diurnal effect, shown by the cosine and sine terms. We visualise the diurnal pattern below showing the estimated probabilities of the three outcomes by hour. The plot uses the reference categories of Version 1 and a weekday submission.
+
+```{r}
+results_editorial$pplot
+```
+
+#### Plot of odds ratios by hour
+
+```{r}
+# text labels
+text1 = data.frame(x=0, y=1, ymin=1, ymax=1, label = 'Higher probability of\nrevise and accept')
+text2 = data.frame(x=0, y=1, ymin=1, ymax=1, label = 'Lower probability of\nrevise and accept')
+#
+gplot = ggplot(results_editorial$odds, aes(x=hour, y=mean, ymin=lower, ymax=upper))+
+  geom_ribbon(alpha = 0.2)+
+  geom_hline(lty=2, yintercept=1, col='dark red')+
+#  geom_point(col='dodgerblue')+
+#  geom_errorbar(width=0, col='dodgerblue')+ # use ribbon instead
+  geom_line(col='dodgerblue')+
+  geom_text(data=text1, aes(x=x, y=y, ymin=ymin, ymax=ymax, label=label), size=2, adj=-0.1, nudge_y = 0.03)+
+  geom_text(data=text2, aes(x=x, y=y, ymin=ymin, ymax=ymax, label=label), size=2, adj=-0.1, nudge_y = -0.03)+
+  xlab('Hour of day')+
+  ylab('Odds ratio')+
+  g.theme
+gplot
+jpeg('figures/odds_ratios_hour.jpg', width=5, height=4, units='in', res=500, quality=100)
+print(gplot)
+invisible(dev.off())
+```
+
+There is a lower odds of acceptance outside normal work hours. 

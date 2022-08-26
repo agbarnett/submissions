@@ -1,0 +1,30 @@
+---
+title: "Random checks of the processed data"
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+library(dplyr)
+library(flextable)
+load('data/jpcAnalysisReady.RData') # from 1_process_data.R
+```
+
+
+```{r, include=FALSE}
+TeachingDemos::char2seed('wycombe')
+sample = sample_n(jpc, 30) %>%
+  select(manuscript_id, address, local.date, local.hour, lat, lon, timezoneId)
+```
+
+
+```{r}
+tab = flextable(sample) %>%
+  fontsize(part = 'all', size = 8) %>%
+  theme_box() %>%
+  colformat_double(j = 4:6, digits=1) %>%
+  autofit()
+tab
+```
