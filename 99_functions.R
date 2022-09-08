@@ -73,11 +73,11 @@ process_nimble = function(indata, inmcmc, predictions = FALSE){
   if(predictions == TRUE){
     ## predictions and residuals
     fitted = filter(table, str_detect(parameter, pattern='^mu')) %>% # model predictions
-      select(row, mean) %>%
+      select(row, mean, lower, upper) %>%
       mutate(row = as.numeric(row)) %>%
       bind_cols(indata)
-    names(fitted)[3] = 'observed'
-    
+    names(fitted)[5] = 'observed'
+
     #
     residuals = mutate(fitted, residual = observed - mean)
     

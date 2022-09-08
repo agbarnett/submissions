@@ -101,7 +101,8 @@ over.time = mutate(jpc,
               month = as.numeric(format(local.date, '%m')),
               yrmon = year + ((month-1)/12)) %>%
   group_by(yrmon, year, month) %>%
-  summarise(count = n())
+  summarise(count = n()) %>%
+  ungroup()
 # adjust monthly count to standard 30 day month
 days_per_month = flagleap(over.time, report=FALSE)
 over.time = left_join(over.time, days_per_month, by=c('year','month')) %>%
@@ -116,7 +117,7 @@ tplot = ggplot(data=over.time, aes(x=yrmon, y=adj_count))+
   g.theme +
   theme(text= element_text(size=15))
 tplot
-jpeg('figures/numbers_over_time.jpg', width=5, height=4, units='in', res=400, quality=100)
+jpeg('figures/numbers_over_time.jpg', width=5, height=4, units='in', res=600, quality=100)
 print(tplot)
 invisible(dev.off())
 ```
@@ -161,6 +162,70 @@ av_increase = filter(results_trend$table, parameter=='pand') %>% pull(mean) %>% 
 ```
 
 There was a large increase in submissions after the pandemic declaration, with an estimated mean increase of `r av_increase` papers per month.
+
+## Model of submissions over time, with an assumption that the pandemic increase ended
+
+The previous model assumed that the post-pandemic increase in submissions remained for the rest of the study period. Here we allow the submission numbers to return to the pre-submission trend at some change-point. In other words, the effect of the pandemic was time-limited.
+
+```{r trend_change, include=FALSE}
+file = c('results', 'trend_change') # location and filename
+outfile = make_file(file)
+if(outfile$exists == FALSE){
+  source('99_nimble_trend_change.R')
+}
+if(outfile$exists == TRUE){
+  load(outfile$file)
+}
+```
+
+#### Plot of model fit
+
+The plot shows the widely applicable information criterion (WAIC) for the different cut-offs for the end of the pandemic effect. The WAIC makes a trade-off between model fit and complexity to try to find a parsimonious model. The smaller the WAIC, the better the model.
+
+```{r}
+# to do: add month label, as geom_text inside dot
+wplot = ggplot(WAIC, aes(x=post_pandemic, y=WAIC))+
+  geom_point()+
+  geom_line()+
+  g.theme+
+  xlab('Post-pandemic cut-off')
+wplot
+# text
+end_year = floor(smallest)
+end_month = month.abb[round(12*(smallest - floor(smallest))) + 1]
+```
+
+The smallest WAIC was on `r end_month` in `r end_year`.
+
+#### Table of estimates for time-limited pandemic
+
+```{r}
+nice_table = process_table(results_trend_change$table, dp=0, rows=c('intercept','trend','pand'))
+nice_table
+# for text
+av_increase = filter(results_trend_change$table, parameter=='pand') %>% pull(mean) %>% round()
+```
+
+With a time-limited pandemic effect, the average mean increase of `r av_increase` papers per month. This effect ended on `r end_month`-`r end_year`.
+
+#### Plot of limited pandemic effect
+
+```{r}
+to_plot = bind_cols(over.time, results_trend_change$residuals)
+gplot = ggplot(data = to_plot, aes(x=yrmon, y=mean, ymin=lower, ymax=upper))+
+  geom_ribbon(alpha=0.2)+
+  geom_line()+
+  geom_point(data= to_plot, aes(x=yrmon, y=adj_count))+
+  g.theme+
+  xlab('Time')+
+  ylab('Monthly number of submissions')
+gplot
+jpeg('figures/numbers_over_time_limited.jpg', width=5, height=4, units='in', res=600, quality=100)
+print(gplot)
+invisible(dev.off())
+```
+
+The plot shows the observed submissions (dots), estimated mean trend (solid line) and 95% credible interval for the mean (grey area).
 
 ##### page break
 
@@ -223,6 +288,9 @@ wplot = ggplot(data=to.plot, aes(x=year, y=percent, col=weekday))+
   g.theme + 
   theme(legend.position = 'right', legend.direction = 'vertical', text=element_text(size=16))
 wplot
+jpeg('figures/weekend.jpg', width=5, height=4, units='in', res=600, quality=100)
+print(wplot)
+invisible(dev.off())
 ```
 
 The plot shows an increase over time in weekend submissions.
@@ -266,6 +334,9 @@ tplot = ggplot(data=for.plot, aes(x=window, y=percent))+
   xlab('Time')+
   theme(text = element_text(size=16))
 tplot
+jpeg('figures/weekend_time.jpg', width=5, height=4, units='in', res=600, quality=100)
+print(tplot)
+invisible(dev.off())
 ```
 
 The orange line is an estimated trend using a non-linear smooth loess with a span of `r span`. The estimated trends shows an increase in weekend submissions close to the pandemic start. The percent of weekend submissions was also relatively high at the start of the data in 2015.
@@ -352,6 +423,9 @@ The countries are ordered by their mean probability, making it easier to spot pa
 ```{r plot_intercepts_submissions, fig.height=6}
 source('2_plot_intercepts.R')
 iplot
+jpeg('figures/intercepts.jpg', width=4, height=5, units='in', res=600, quality=100)
+print(iplot)
+invisible(dev.off())
 ```
 
 "small" is the estimate for small countries combined, which is those with fewer than 50 submissions. 
@@ -403,6 +477,11 @@ hour.star = ggplot(data=to.plot.star.bridges, aes(x=local.hour, y=percent, col=c
   g.theme +
   theme(text = element_text(size=20))
 hour.star
+# smaller font
+hour.star = hour.star + theme(text = element_text(size=7))
+jpeg('figures/hour_star.jpg', width=5, height=4, units='in', res=600, quality=100)
+print(hour.star)
+invisible(dev.off())
 ```
 
 
@@ -422,6 +501,11 @@ hour.nonstar = ggplot(data=to.plot.star, aes(x=local.hour, y=percent, col=countr
   g.theme +
   theme(text = element_text(size=20))
 hour.nonstar
+# smaller font
+hour.nonstar = hour.nonstar + theme(text = element_text(size=7))
+jpeg('figures/hour_line.jpg', width=5, height=4, units='in', res=600, quality=100)
+print(hour.nonstar)
+invisible(dev.off())
 ```
 
 ### Pandemic comparison averaged over all countries
@@ -446,6 +530,11 @@ hour.pandemic = ggplot(data=to.plot, aes(x=local.hour, y=percent, col=pandemic))
     legend.position = c(0.85,0.15),
     text = element_text(size=20))
 hour.pandemic
+# smaller font for jpeg
+hour.pandemic = hour.pandemic + theme(text = element_text(size=8))
+jpeg('figures/hour_pandemic.jpg', width=5, height=4, units='in', res=600, quality=100)
+print(hour.pandemic)
+invisible(dev.off())
 ```
 
 ### Statistical model - time of day
@@ -474,8 +563,8 @@ The table shows the sine and cosine terms that determine the 24-hour curve for t
 
 ```{r}
 results_hours$pplot
-jpeg('figures/hour_of_day.jpg', width=5, height=4, units='in', res=500, quality=100)
-print(pplot)
+jpeg('figures/hour_of_day.jpg', width=5, height=4, units='in', res=600, quality=100)
+print(results_hours$pplot)
 invisible(dev.off())
 #
 # estimate phase change, pre and post pandemic
@@ -526,7 +615,13 @@ ftab
 The table shows the odds ratios (and 95% credible intervals) for being in a higher category, with the order of reject, revise, accept. The reference category for version is the first, hence later versions had a far higher lower odds of being rejected. Submissions on the weekend had a lower odds of being accepted. There was an apparent diurnal effect, shown by the cosine and sine terms. We visualise the diurnal pattern below showing the estimated probabilities of the three outcomes by hour. The plot uses the reference categories of Version 1 and a weekday submission.
 
 ```{r}
-results_editorial$pplot
+eplot = results_editorial$pplot + 
+  scale_x_continuous(breaks=c(0,6,12,18,24), expand=c(0,0))+
+  scale_y_continuous(expand=c(0,0))+
+  xlab('Hour')
+jpeg('figures/editorial.jpg', width=5, height=4, units='in', res=600, quality=100)
+print(eplot)
+invisible(dev.off())
 ```
 
 #### Plot of odds ratios by hour
@@ -542,15 +637,41 @@ gplot = ggplot(results_editorial$odds, aes(x=hour, y=mean, ymin=lower, ymax=uppe
 #  geom_point(col='dodgerblue')+
 #  geom_errorbar(width=0, col='dodgerblue')+ # use ribbon instead
   geom_line(col='dodgerblue')+
-  geom_text(data=text1, aes(x=x, y=y, ymin=ymin, ymax=ymax, label=label), size=2, adj=-0.1, nudge_y = 0.03)+
-  geom_text(data=text2, aes(x=x, y=y, ymin=ymin, ymax=ymax, label=label), size=2, adj=-0.1, nudge_y = -0.03)+
+  geom_text(data=text1, aes(x=x, y=y, ymin=ymin, ymax=ymax, label=label), size=3, adj=0, nudge_y = 0.05)+
+  geom_text(data=text2, aes(x=x, y=y, ymin=ymin, ymax=ymax, label=label), size=3, adj=0, nudge_y = -0.05)+
   xlab('Hour of day')+
   ylab('Odds ratio')+
   g.theme
 gplot
-jpeg('figures/odds_ratios_hour.jpg', width=5, height=4, units='in', res=500, quality=100)
+jpeg('figures/odds_ratios_hour.jpg', width=5, height=4, units='in', res=600, quality=100)
 print(gplot)
 invisible(dev.off())
 ```
 
 There is a lower odds of acceptance outside normal work hours. 
+
+# Flow of papers
+
+```{r}
+flow = select(jpc, manuscript_id, version, decision) %>%
+  mutate(manuscript_id = str_remove_all(manuscript_id, '\\.R[0-9]')) %>%
+  group_by(manuscript_id) %>%
+  pivot_wider(names_from = 'version', values_from='decision', names_prefix = 'd') %>%
+  ungroup() %>%
+  # if left-censored results are missing, must be revise
+  mutate(`d5` = ifelse(!is.na(`d6`) & is.na(`d5`), 'Revise', `d5`),
+         `d4` = ifelse(!is.na(`d5`) & is.na(`d4`), 'Revise', `d4`),
+         `d3` = ifelse(!is.na(`d4`) & is.na(`d3`), 'Revise', `d3`),
+         `d2` = ifelse(!is.na(`d3`) & is.na(`d2`), 'Revise', `d2`),
+         `d1` = ifelse(!is.na(`d2`) & is.na(`d1`), 'Revise', `d1`)) %>%
+  unite('pattern', starts_with('d'), sep=', ', na.rm = TRUE) # make overall pattern
+tab = group_by(flow, pattern) %>%
+  tally() %>%
+  arrange(-n) %>%
+  mutate(percent = round(100*prop.table(n)))
+ftab = flextable(tab) %>%
+  autofit() %>%
+  theme_box()
+ftab
+# length(unique(flow$manuscript_id)) # number of manuscripts
+```
